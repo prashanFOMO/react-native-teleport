@@ -23,6 +23,7 @@ using namespace facebook::react;
 @interface PortalView () <RCTPortalViewViewProtocol>
 
 @property (nonatomic, strong) NSString *hostName;
+@property (nonatomic, strong) NSString *registeredName;
 @property (nonatomic, strong) UIView *targetView;
 
 @end
@@ -43,6 +44,8 @@ using namespace facebook::react;
     _props = defaultProps;
 
     UIView *content = [[UIView alloc] init];
+    content.frame = self.bounds;
+    content.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.contentView = content;
     self.targetView = content;
     _ownChildren = [NSMutableArray array];
@@ -71,6 +74,35 @@ using namespace facebook::react;
   }
 }
 
+- (void)notifyMirrorsIfRegistered
+{
+  if (self.registeredName) {
+    [[PortalRegistry sharedInstance] registerPortalSource:self.contentView
+                                                 withName:self.registeredName];
+  }
+}
+
+- (void)didMoveToWindow
+{
+  [super didMoveToWindow];
+  [self notifyMirrorsIfRegistered];
+}
+
+- (void)layoutSubviews
+{
+  [super layoutSubviews];
+  self.contentView.frame = self.bounds;
+  [self notifyMirrorsIfRegistered];
+}
+
+- (void)updateLayoutMetrics:(const LayoutMetrics &)layoutMetrics
+           oldLayoutMetrics:(const LayoutMetrics &)oldLayoutMetrics
+{
+  [super updateLayoutMetrics:layoutMetrics oldLayoutMetrics:oldLayoutMetrics];
+  self.contentView.frame = self.bounds;
+  [self notifyMirrorsIfRegistered];
+}
+
 - (void)updateProps:(Props::Shared const &)props oldProps:(Props::Shared const &)oldProps
 {
   const auto &newViewProps = *std::static_pointer_cast<PortalViewProps const>(props);
@@ -80,6 +112,20 @@ using namespace facebook::react;
       newHostStr.empty() ? nil : [NSString stringWithUTF8String:newHostStr.c_str()];
 
   std::string newNameStr = newViewProps.name;
+  NSString *newName = newNameStr.empty() ? nil : [NSString stringWithUTF8String:newNameStr.c_str()];
+
+  if (![self.registeredName isEqualToString:newName]) {
+    if (self.registeredName) {
+      [[PortalRegistry sharedInstance] unregisterPortalSourceWithName:self.registeredName
+                                                               source:self.contentView];
+    }
+
+    self.registeredName = newName;
+
+    if (newName) {
+      [[PortalRegistry sharedInstance] registerPortalSource:self.contentView withName:newName];
+    }
+  }
 
   if (![self.hostName isEqualToString:newHostName]) {
     if (self.hostName) {
@@ -140,6 +186,8 @@ using namespace facebook::react;
       [self.targetView addSubview:childComponentView];
     }
   }
+
+  [self notifyMirrorsIfRegistered];
 }
 
 - (void)unmountChildComponentView:(UIView<RCTComponentViewProtocol> *)childComponentView
@@ -147,6 +195,7 @@ using namespace facebook::react;
 {
   [_ownChildren removeObject:childComponentView];
   [childComponentView removeFromSuperview];
+  [self notifyMirrorsIfRegistered];
 }
 
 - (void)onHostChanged
@@ -157,6 +206,7 @@ using namespace facebook::react;
   if (newTarget != self.targetView) {
     self.targetView = newTarget;
     [self moveOwnChildrenToTarget:newTarget];
+    [self notifyMirrorsIfRegistered];
   }
 }
 
@@ -167,14 +217,30 @@ using namespace facebook::react;
   if (self.hostName) {
     [[PortalRegistry sharedInstance] unregisterPendingPortal:self withHostName:self.hostName];
   }
+  if (self.registeredName) {
+    [[PortalRegistry sharedInstance] unregisterPortalSourceWithName:self.registeredName
+                                                             source:self.contentView];
+  }
 
   // Reset all portal state so recycled views don't retain stale host references.
   // Without this, a recycled PortalView's targetView still points to the old host,
   // causing mountChildComponentView to add children to the wrong host and
   // moveOwnChildrenToTarget to operate on a stale source.
   self.hostName = nil;
+  self.registeredName = nil;
   self.targetView = self.contentView;
   [_ownChildren removeAllObjects];
+}
+
+- (void)dealloc
+{
+  if (self.hostName) {
+    [[PortalRegistry sharedInstance] unregisterPendingPortal:self withHostName:self.hostName];
+  }
+  if (self.registeredName) {
+    [[PortalRegistry sharedInstance] unregisterPortalSourceWithName:self.registeredName
+                                                             source:self.contentView];
+  }
 }
 
 // MARK: touch handling
